@@ -47,3 +47,23 @@ class HandDetector:
                                     cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 0), 1)
                 all_hands.append(lm_list)
         return all_hands
+
+    def fingers_up(self, lm_list):
+        """Return a list of 5 elements (1 if finger is up, else 0)."""
+        tips = [4, 8, 12, 16, 20]  # Thumb, Index, Middle, Ring, Pinky
+        fingers = []
+
+        # Thumb
+        if lm_list[tips[0]][1] > lm_list[tips[0] - 1][1]:
+            fingers.append(1)
+        else:
+            fingers.append(0)
+
+        # Fingers
+        for id in range(1, 5):
+            if lm_list[tips[id]][2] < lm_list[tips[id] - 2][2]:
+                fingers.append(1)
+            else:
+                fingers.append(0)
+
+        return fingers
