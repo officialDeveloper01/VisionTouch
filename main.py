@@ -16,7 +16,7 @@ def main():
     detector = HandDetector(detection_conf=0.7, track_conf=0.7)
     drawer = AirDrawer(1280, 720)
 
-    window_name = "VisionTouch - Precision Mode"
+    window_name = "VisionTouch - Fixed Draw Mode"
     cv2.namedWindow(window_name, cv2.WND_PROP_FULLSCREEN)
     cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
@@ -32,21 +32,23 @@ def main():
 
         img = cv2.flip(img, 1)
         img = detector.find_hands(img)
-        all_hands = detector.find_positions(img, draw=False)
+        hands = detector.find_positions(img, draw=False)
 
-        right_hand, left_hand = None, None
+        # Persist drawing when no hands are detected
+        if not hands:
+            img = drawer.overlay_on_frame(img)
+            cv2.imshow(window_name, img)
+            if cv2.waitKey(1) & 0xFF == 27:
+                break
+            continue
 
-        for hand in all_hands:
-            cx = hand[0][1]
-            if cx < 640:
-                left_hand = hand
-            else:
-                right_hand = hand
+        right_hand = next((h for h in hands if h["label"] == "Right"), None)
+        left_hand = next((h for h in hands if h["label"] == "Left"), None)
 
         # --- CLEAR GESTURE: both index fingers close ---
         if left_hand and right_hand:
-            lx, ly = left_hand[8][1], left_hand[8][2]
-            rx, ry = right_hand[8][1], right_hand[8][2]
+            lx, ly = left_hand["landmarks"][8][1], left_hand["landmarks"][8][2]
+            rx, ry = right_hand["landmarks"][8][1], right_hand["landmarks"][8][2]
             dist_lr = math.hypot(rx - lx, ry - ly)
             if dist_lr < 100:
                 drawer.clear()
@@ -54,33 +56,34 @@ def main():
                             cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 4)
                 time.sleep(0.5)
 
-        # --- LEFT HAND: ERASER ---
+        # --- LEFT HAND = ERASER ---
         if left_hand:
             fingers_left = detector.fingers_up(left_hand)
-            lx, ly = left_hand[8][1], left_hand[8][2]
-            if fingers_left[1] == 1 and sum(fingers_left) == 1:  # Only index up
-                mode = "ERASE"
-                img = drawer.draw(img, lx, ly, mode)
+            lx, ly = left_hand["landmarks"][8][1], left_hand["landmarks"][8][2]
+            if fingers_left[1] == 1 and sum(fingers_left) == 1:
+                img = drawer.draw(img, lx, ly, "ERASE")
                 cv2.circle(img, (lx, ly), 25, (0, 0, 255), 2)
 
-        # --- RIGHT HAND: DRAW + MOVE ---
+        # --- RIGHT HAND = DRAW / MOVE / MOVE_CANVAS ---
         if right_hand:
             fingers_right = detector.fingers_up(right_hand)
-            x1, y1 = right_hand[8][1], right_hand[8][2]
-            x2, y2 = right_hand[4][1], right_hand[4][2]
+            x1, y1 = right_hand["landmarks"][8][1], right_hand["landmarks"][8][2]
+            x2, y2 = right_hand["landmarks"][4][1], right_hand["landmarks"][4][2]
             dist = math.hypot(x2 - x1, y2 - y1)
 
-            new_mode = mode
+            # Detect gestures
+            is_index_up = fingers_right[1] == 1 and sum(fingers_right) == 1
+            is_pinch = dist < 40
 
-            # Detect pinch gesture for moving canvas
-            if fingers_right[1] == 1 and fingers_right[2] == 0:
-                new_mode = "DRAW"
-            elif dist < 40:  # Pinch threshold
+            new_mode = mode
+            if is_pinch:
                 new_mode = "MOVE_CANVAS"
+            elif is_index_up:
+                new_mode = "DRAW"
             else:
                 new_mode = "MOVE"
 
-            # Mode change detection
+            # Handle mode transitions
             if new_mode != mode:
                 mode = new_mode
                 can_draw = False
@@ -88,19 +91,18 @@ def main():
                 if mode == "DRAW":
                     draw_mode_start_time = time.time()
 
-            # Handle DRAW mode with delay
+            # --- DRAW MODE ---
             if mode == "DRAW":
                 elapsed = time.time() - draw_mode_start_time
                 if elapsed >= 2.0:
                     can_draw = True
-                    if fingers_right[1] == 1:  # index up = draw
-                        img = drawer.draw(img, x1, y1, mode)
+                    img = drawer.draw(img, x1, y1, "DRAW")
                 else:
-                    cv2.putText(img, "⏳ Hold steady... preparing to draw", (400, 80),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
+                    cv2.putText(img, "⏳ Hold steady... preparing to draw",
+                                (400, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
 
-            # MOVE CANVAS only during pinch
-            elif mode == "MOVE_CANVAS" and dist < 40:
+            # --- MOVE CANVAS ---
+            elif mode == "MOVE_CANVAS" and is_pinch:
                 moving_canvas = True
                 img = drawer.draw(img, x1, y1, "MOVE")
             else:
@@ -111,6 +113,8 @@ def main():
             cv2.putText(img, f"Mode: {mode}", (50, 80),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 0), 3)
 
+        # Always overlay current canvas
+        img = drawer.overlay_on_frame(img)
         cv2.imshow(window_name, img)
 
         if cv2.waitKey(1) & 0xFF == 27:

@@ -58,6 +58,9 @@ class AirDrawer:
         img = cv2.bitwise_and(img, inv_mask)
         img = cv2.bitwise_or(img, self.canvas)
         return img
+    
+    def overlay_on_frame(self, frame):
+        return cv2.addWeighted(frame, 1, self.canvas, 1, 0)
 
     def clear(self):
         self.canvas.fill(0)
