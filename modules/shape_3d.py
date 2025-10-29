@@ -1,93 +1,104 @@
+from OpenGL.GL import *
+from OpenGL.GLU import *
+from OpenGL.GLUT import *
 import numpy as np
 import cv2
 import math
 
-class Shape3D:
-    def __init__(self, shape_type="cube", size=100, pos=(640, 360), color=(0, 255, 255)):
-        self.shape_type = shape_type
-        self.size = size
-        self.pos = np.array(pos, dtype=float)
-        self.color = color
-        self.rotation = np.array([0.0, 0.0, 0.0])  # x, y, z rotation
 
-    def get_vertices(self):
-        s = self.size / 2
-        if self.shape_type == "cube":
-            return np.array([
-                [-s, -s, -s],
-                [ s, -s, -s],
-                [ s,  s, -s],
-                [-s,  s, -s],
-                [-s, -s,  s],
-                [ s, -s,  s],
-                [ s,  s,  s],
-                [-s,  s,  s]
-            ])
-        elif self.shape_type == "pyramid":
-            return np.array([
-                [-s, -s, -s],
-                [ s, -s, -s],
-                [ s, -s,  s],
-                [-s, -s,  s],
-                [ 0,  s,  0]
-            ])
+class Shape3DManager:
+    def __init__(self):
+        self.active_shape = "cube"
+        self.rotation = [0, 0]
+        self.scale = 1.0
+        self.position = [0, 0]
+        self.pinch_active = {"left": False, "right": False}
+
+    def set_active_shape(self, shape_type):
+        self.active_shape = shape_type
+
+    def handle_pinch(self, center, label):
+        """Move or rotate the 3D shape based on pinch gesture."""
+        self.pinch_active[label] = True
+        if label == "left":
+            # Move object
+            self.position[0] = (center[0] - 640) / 100
+            self.position[1] = (360 - center[1]) / 100
         else:
-            return np.zeros((0, 3))
+            # Rotate object
+            self.rotation[0] = (center[1] - 360) / 3
+            self.rotation[1] = (center[0] - 640) / 3
 
-    def rotate(self, rx, ry, rz):
-        self.rotation += np.array([rx, ry, rz])
+    def handle_release(self, label):
+        self.pinch_active[label] = False
 
-    def project(self, vertices):
-        # Build rotation matrices
-        rx, ry, rz = np.radians(self.rotation)
-        rot_x = np.array([
-            [1, 0, 0],
-            [0, math.cos(rx), -math.sin(rx)],
-            [0, math.sin(rx),  math.cos(rx)]
-        ])
-        rot_y = np.array([
-            [ math.cos(ry), 0, math.sin(ry)],
+    def draw_cube(self):
+        glutSolidCube(1.0)
+
+    def draw_pyramid(self):
+        glBegin(GL_TRIANGLES)
+        vertices = [
             [0, 1, 0],
-            [-math.sin(ry), 0, math.cos(ry)]
-        ])
-        rot_z = np.array([
-            [math.cos(rz), -math.sin(rz), 0],
-            [math.sin(rz),  math.cos(rz), 0],
-            [0, 0, 1]
-        ])
+            [-1, -1, 1],
+            [1, -1, 1],
+            [1, -1, -1],
+            [-1, -1, -1],
+        ]
+        faces = [
+            [0, 1, 2],
+            [0, 2, 3],
+            [0, 3, 4],
+            [0, 4, 1],
+            [1, 2, 3, 4]
+        ]
+        for face in faces[:4]:
+            for v in face:
+                glVertex3fv(vertices[v])
+        glEnd()
 
-        rotation_matrix = rot_z @ rot_y @ rot_x
-        rotated = vertices @ rotation_matrix.T
+    def draw_sphere(self):
+        quad = gluNewQuadric()
+        gluSphere(quad, 0.8, 32, 32)
 
-        # Simple perspective projection
-        f = 300  # focal length
-        depth = rotated[:, 2] + f
-        projected = rotated[:, :2] * (f / depth[:, np.newaxis])
-        projected += self.pos
-        return projected.astype(int)
+    def draw_cylinder(self):
+        quad = gluNewQuadric()
+        gluCylinder(quad, 0.5, 0.5, 1.2, 32, 32)
 
-    def draw(self, img):
-        vertices = self.get_vertices()
-        if len(vertices) == 0:
-            return img
+    def render_preview(self, frame):
+        """Render the 3D shape as an overlay in OpenCV window."""
+        h, w, _ = frame.shape
+        preview = np.zeros((h, w, 3), dtype=np.uint8)
 
-        points = self.project(vertices)
+        # Create an off-screen OpenGL context
+        glutInit()
+        glutInitDisplayMode(GLUT_RGB | GLUT_DEPTH | GLUT_DOUBLE)
+        glutInitWindowSize(400, 400)
+        glutCreateWindow(b"3D Preview")
 
-        if self.shape_type == "cube":
-            edges = [
-                (0,1), (1,2), (2,3), (3,0),
-                (4,5), (5,6), (6,7), (7,4),
-                (0,4), (1,5), (2,6), (3,7)
-            ]
-        elif self.shape_type == "pyramid":
-            edges = [
-                (0,1), (1,2), (2,3), (3,0),
-                (0,4), (1,4), (2,4), (3,4)
-            ]
-        else:
-            edges = []
+        glEnable(GL_DEPTH_TEST)
+        glClearColor(0.1, 0.1, 0.1, 1)
 
-        for (i, j) in edges:
-            cv2.line(img, tuple(points[i]), tuple(points[j]), self.color, 2)
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        glLoadIdentity()
 
-        return img
+        glTranslatef(self.position[0], self.position[1], -4.0)
+        glScalef(self.scale, self.scale, self.scale)
+        glRotatef(self.rotation[0], 1, 0, 0)
+        glRotatef(self.rotation[1], 0, 1, 0)
+
+        glColor3f(0.3, 0.8, 1.0)
+        if self.active_shape == "cube":
+            self.draw_cube()
+        elif self.active_shape == "pyramid":
+            self.draw_pyramid()
+        elif self.active_shape == "sphere":
+            self.draw_sphere()
+        elif self.active_shape == "cylinder":
+            self.draw_cylinder()
+
+        glutSwapBuffers()
+        glutHideWindow()
+
+        cv2.putText(preview, f"3D Mode: {self.active_shape}", (40, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+        return preview
