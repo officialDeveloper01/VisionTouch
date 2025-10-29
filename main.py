@@ -77,32 +77,44 @@ def main():
         left_pinch, left_center = is_pinch(left_hand) if left_hand else (False, None)
         right_pinch, right_center = is_pinch(right_hand) if right_hand else (False, None)
 
-        # --- ZOOM MODE ---
+        # -------------------------
+        # ✅ FIXED ZOOM BEHAVIOUR
+        # -------------------------
+        # Two-hand pinch only triggers zoom if both hands are pinching *the same shape*
         if left_pinch and right_pinch:
-            cv2.line(img, left_center, right_center, (255, 255, 0), 3)
-            dist_now = distance(left_center, right_center)
+            shape_left = shapes.selected_left
+            shape_right = shapes.selected_right
 
-            if not zoom_active:
-                zoom_active = True
-                zoom_start_dist = dist_now
-                # Use the first selected shape for zooming
-                zoom_shape = shapes.selected_left or shapes.selected_right
-                if zoom_shape:
-                    original_size = zoom_shape["size"]
+            if shape_left is not None and shape_left is shape_right:
+                # Zoom on the same shape
+                cv2.line(img, left_center, right_center, (255, 255, 0), 3)
+                dist_now = distance(left_center, right_center)
+
+                if not zoom_active:
+                    zoom_active = True
+                    zoom_start_dist = dist_now
+                    zoom_shape = shape_left
+                    if zoom_shape:
+                        original_size = zoom_shape["size"]
+                else:
+                    if zoom_shape:
+                        scale = dist_now / zoom_start_dist
+                        new_size = int(original_size * scale)
+                        zoom_shape["size"] = max(30, min(new_size, 400))  # clamp
+                        cv2.putText(img, f"Zoom: {int(scale * 100)}%", (40, 120),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)
             else:
-                if zoom_shape:
-                    scale = dist_now / zoom_start_dist
-                    new_size = int(original_size * scale)
-                    zoom_shape["size"] = max(30, min(new_size, 400))  # clamp
-                    cv2.putText(img, f"Zoom: {int(scale*100)}%", (40, 120),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)
+                # If both hands are pinching different shapes → move independently
+                zoom_active = False
+                zoom_shape = None
+                zoom_start_dist = None
         else:
             zoom_active = False
             zoom_start_dist = None
             zoom_shape = None
             original_size = None
 
-        # --- NORMAL INTERACTIONS ---
+        # --- NORMAL INTERACTIONS --- #
         for label, hand in [("left", left_hand), ("right", right_hand)]:
             if not hand:
                 setattr(shapes, f"selected_{label}", None)
