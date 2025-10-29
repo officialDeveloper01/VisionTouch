@@ -182,7 +182,7 @@ class ShapeManager:
         # Draw bin
         bx, by, bw, bh = self.bin.values()
         cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (0, 0, 255), 2)
-        cv2.putText(frame, "🗑️", (bx + 30, by + 80),
+        cv2.putText(frame, "Bin", (bx + 30, by + 80),
                     cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 4)
 
         return frame
