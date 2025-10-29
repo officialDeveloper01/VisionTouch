@@ -1,178 +1,131 @@
-import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
 import cv2
+import mediapipe as mp
 import math
-import time
 from modules.hand_detector import HandDetector
 from modules.shape_utils import ShapeManager
 
 
-def is_pinch(hand):
-    x1, y1 = hand["landmarks"][8][1], hand["landmarks"][8][2]
-    x2, y2 = hand["landmarks"][4][1], hand["landmarks"][4][2]
-    dist = math.hypot(x2 - x1, y2 - y1)
-    return dist < 40, (int((x1 + x2) // 2), int((y1 + y2) // 2))
+# --- Setup ---
+width, height = 1280, 720
+cap = cv2.VideoCapture(0)
+cap.set(3, width)
+cap.set(4, height)
+
+detector = HandDetector(detectionCon=0.8)
+shape_manager = ShapeManager(width, height)
+
+mode = "UI"  # Toggle between UI and drawing
+rotate_mode = False  # Active when both hands are detected for rotation
+
+last_angle = None
 
 
-def distance(p1, p2):
-    return math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+# --- Helper functions ---
+def calculate_angle(p1, p2, center):
+    """Return angle (in degrees) between two points relative to a center."""
+    ang1 = math.degrees(math.atan2(p1[1] - center[1], p1[0] - center[0]))
+    ang2 = math.degrees(math.atan2(p2[1] - center[1], p2[0] - center[0]))
+    return ang2 - ang1
 
 
-def main():
-    cap = cv2.VideoCapture(0)
-    cap.set(3, 1280)
-    cap.set(4, 720)
+def draw_text(frame, text, pos, color=(255, 255, 255)):
+    cv2.putText(frame, text, pos, cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
 
-    detector = HandDetector(detection_conf=0.7, track_conf=0.7)
-    shapes = ShapeManager(1280, 720)
 
-    window_name = "VisionTouch - Shape Sandbox"
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+# --- Main Loop ---
+while True:
+    success, frame = cap.read()
+    frame = cv2.flip(frame, 1)
+    hands, frame = detector.findHands(frame)
 
-    pinch_cooldown = 0
-    draw_cooldown_start = None
-    draw_cooldown_duration = 3  # seconds
+    if hands:
+        # Left & right hand distinction
+        hand1 = hands[0]
+        lmList1 = hand1["lmList"]
+        bbox1 = hand1["bbox"]
+        center1 = hand1["center"]
+        fingers1 = detector.fingersUp(hand1)
 
-    # Zoom state
-    zoom_active = False
-    zoom_start_dist = None
-    zoom_shape = None
-    original_size = None
+        hand2 = hands[1] if len(hands) == 2 else None
+        center2 = hand2["center"] if hand2 else None
 
-    while True:
-        success, frame = cap.read()
-        if not success:
-            break
+        # Left hand index tip
+        x1, y1 = lmList1[8][0:2]
 
-        frame = cv2.flip(frame, 1)
-        img = detector.find_hands(frame, draw=False)
-        hands = detector.find_positions(img, draw=False)
+        # --- Shape interaction ---
+        if fingers1 == [0, 1, 0, 0, 0]:  # Only index finger up
+            if mode == "UI":
+                btn_type = shape_manager.check_button_click(x1, y1)
+                if btn_type:
+                    shape_manager.add_shape(btn_type)
 
-        # Fix mirroring issue
-        for h in hands:
-            h["label"] = "Right" if h["label"] == "Left" else "Left"
-
-        current_time = time.time()
-
-        # Handle draw cooldown countdown
-        if draw_cooldown_start:
-            elapsed = current_time - draw_cooldown_start
-            if elapsed < draw_cooldown_duration:
-                remaining = int(draw_cooldown_duration - elapsed + 1)
-                cv2.putText(img, f"🖊️ Drawing starts in {remaining}s", (420, 360),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)
-            else:
-                # Start drawing after cooldown completes
-                shapes.drawing = True
-                shapes.current_draw = {"type": "draw", "points": [], "color": shapes._random_color()}
-                draw_cooldown_start = None
-
-        # Detect left and right hand
-        left_hand = next((h for h in hands if h["label"] == "Left"), None)
-        right_hand = next((h for h in hands if h["label"] == "Right"), None)
-
-        # Detect pinch for each hand
-        left_pinch, left_center = is_pinch(left_hand) if left_hand else (False, None)
-        right_pinch, right_center = is_pinch(right_hand) if right_hand else (False, None)
-
-        # -------------------------
-        # ✅ FIXED ZOOM BEHAVIOUR
-        # -------------------------
-        # Two-hand pinch only triggers zoom if both hands are pinching *the same shape*
-        if left_pinch and right_pinch:
-            shape_left = shapes.selected_left
-            shape_right = shapes.selected_right
-
-            if shape_left is not None and shape_left is shape_right:
-                # Zoom on the same shape
-                cv2.line(img, left_center, right_center, (255, 255, 0), 3)
-                dist_now = distance(left_center, right_center)
-
-                if not zoom_active:
-                    zoom_active = True
-                    zoom_start_dist = dist_now
-                    zoom_shape = shape_left
-                    if zoom_shape:
-                        original_size = zoom_shape["size"]
+                # Select or move shape
+                if not shape_manager.selected_left:
+                    shape_manager.selected_left = shape_manager.select_shape(x1, y1)
                 else:
-                    if zoom_shape:
-                        scale = dist_now / zoom_start_dist
-                        new_size = int(original_size * scale)
-                        zoom_shape["size"] = max(30, min(new_size, 400))  # clamp
-                        cv2.putText(img, f"Zoom: {int(scale * 100)}%", (40, 120),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)
+                    shape_manager.last_left_pos = shape_manager.move_shape(
+                        shape_manager.selected_left, x1, y1, shape_manager.last_left_pos
+                    )
+
+            elif mode == "DRAW" and shape_manager.drawing and shape_manager.current_draw:
+                shape_manager.current_draw["points"].append((x1, y1))
+
+        # --- Finish drawing on pinch (thumb + index) ---
+        if fingers1 == [1, 1, 0, 0, 0] and shape_manager.drawing:
+            shape_manager.finish_draw()
+
+        # --- Two-hand interaction for rotation ---
+        if hand2:
+            fingers2 = detector.fingersUp(hand2)
+            if fingers1 == [0, 1, 0, 0, 0] and fingers2 == [0, 1, 0, 0, 0]:
+                # Both index fingers up → rotate mode
+                rotate_mode = True
+                if shape_manager.selected_left:
+                    shape = shape_manager.selected_left
+                    # Compute relative angle between two hands
+                    angle_now = math.degrees(math.atan2(center2[1] - center1[1], center2[0] - center1[0]))
+                    if last_angle is None:
+                        last_angle = angle_now
+                    else:
+                        delta = angle_now - last_angle
+                        if abs(delta) > 2:
+                            shape_manager.rotate_shape(shape, delta)
+                            last_angle = angle_now
             else:
-                # If both hands are pinching different shapes → move independently
-                zoom_active = False
-                zoom_shape = None
-                zoom_start_dist = None
+                rotate_mode = False
+                last_angle = None
         else:
-            zoom_active = False
-            zoom_start_dist = None
-            zoom_shape = None
-            original_size = None
+            rotate_mode = False
+            last_angle = None
 
-        # --- NORMAL INTERACTIONS --- #
-        for label, hand in [("left", left_hand), ("right", right_hand)]:
-            if not hand:
-                setattr(shapes, f"selected_{label}", None)
-                continue
+        # --- Deselect if pinch together over bin ---
+        if shape_manager.selected_left:
+            if shape_manager.remove_shape_if_in_bin(shape_manager.selected_left):
+                shape_manager.selected_left = None
+                shape_manager.last_left_pos = None
 
-            pinch, center = is_pinch(hand)
-            if pinch:
-                cv2.circle(img, center, 12, (0, 255, 255), -1)
+    else:
+        shape_manager.selected_left = None
+        shape_manager.last_left_pos = None
+        rotate_mode = False
+        last_angle = None
 
-                # Drawing mode active
-                if shapes.drawing:
-                    shapes.current_draw["points"].append(center)
-                    continue
+    # --- Draw all UI and shapes ---
+    frame = shape_manager.draw_ui(frame)
 
-                # Button click
-                if pinch_cooldown <= 0 and not draw_cooldown_start:
-                    clicked = shapes.check_button_click(*center)
-                    if clicked:
-                        if clicked == "draw":
-                            draw_cooldown_start = time.time()  # start 3s countdown
-                        else:
-                            shapes.add_shape(clicked)
-                        pinch_cooldown = 25
+    # --- Info text ---
+    draw_text(frame, "Mode: " + mode, (60, 650))
+    if rotate_mode:
+        draw_text(frame, "Rotate Mode Active", (60, 690), (0, 255, 0))
 
-                # Move shapes
-                selected = getattr(shapes, f"selected_{label}")
-                last_pos = getattr(shapes, f"last_{label}_pos")
-                if selected is None:
-                    shape = shapes.select_shape(*center)
-                    if shape:
-                        setattr(shapes, f"selected_{label}", shape)
-                        setattr(shapes, f"last_{label}_pos", center)
-                else:
-                    new_pos = shapes.move_shape(selected, *center, last_pos)
-                    setattr(shapes, f"last_{label}_pos", new_pos)
-                    if shapes.remove_shape_if_in_bin(selected):
-                        setattr(shapes, f"selected_{label}", None)
-            else:
-                # If drawing and pinch released → finish
-                if shapes.drawing:
-                    shapes.finish_draw()
-                setattr(shapes, f"selected_{label}", None)
-                setattr(shapes, f"last_{label}_pos", None)
+    cv2.imshow("Gesture Drawing", frame)
+    key = cv2.waitKey(1)
 
-        pinch_cooldown = max(0, pinch_cooldown - 1)
+    # --- Keyboard controls ---
+    if key == ord("t"):
+        mode = "DRAW" if mode == "UI" else "UI"
+    elif key == 27:  # ESC to exit
+        break
 
-        img = shapes.draw_ui(img)
-        cv2.putText(img, "Pinch to Add / Move / Draw / Delete | Two-Hand Pinch = Resize", (40, 700),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-
-        cv2.imshow(window_name, img)
-
-        if cv2.waitKey(1) & 0xFF == 27:
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
-
-
-if __name__ == "__main__":
-    main()
+cap.release()
+cv2.destroyAllWindows()

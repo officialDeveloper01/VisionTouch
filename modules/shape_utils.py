@@ -1,4 +1,3 @@
-# modules/shape_utils.py
 import cv2
 import numpy as np
 import random
@@ -14,7 +13,7 @@ class ShapeManager:
         self.selected_right = None
         self.last_left_pos = None
         self.last_right_pos = None
-        self.drawing_points = []  # store points for draw mode
+        self.drawing_points = []
         self.drawing = False
         self.current_draw = None
 
@@ -32,12 +31,8 @@ class ShapeManager:
         # Bin area
         self.bin = {"x": width - 200, "y": height - 150, "w": 120, "h": 120}
 
-    # ---------------- Utility ---------------- #
-
     def _random_color(self):
         return tuple(random.randint(80, 255) for _ in range(3))
-
-    # ---------------- Shape Actions ---------------- #
 
     def add_shape(self, shape_type):
         size = random.randint(60, 120)
@@ -50,11 +45,15 @@ class ShapeManager:
             self.current_draw = {"type": "draw", "points": [], "color": color}
         else:
             self.shapes.append({
-                "x": x, "y": y, "size": size, "color": color, "type": shape_type
+                "x": x,
+                "y": y,
+                "size": size,
+                "color": color,
+                "type": shape_type,
+                "rotation": 0  # new rotation attribute
             })
 
     def finish_draw(self):
-        """End the draw mode and save it as a shape."""
         if self.current_draw and len(self.current_draw["points"]) > 5:
             self.shapes.append(self.current_draw)
         self.drawing = False
@@ -90,7 +89,12 @@ class ShapeManager:
                 shape["y"] += int(dy)
                 shape["x"] = np.clip(shape["x"], 0, self.width - shape["size"])
                 shape["y"] = np.clip(shape["y"], 0, self.height - shape["size"])
-        return (px, py)
+            return (px, py)
+
+    def rotate_shape(self, shape, angle_delta):
+        """Rotate shape by delta angle in degrees."""
+        if shape and shape["type"] != "draw":
+            shape["rotation"] = (shape.get("rotation", 0) + angle_delta) % 360
 
     def remove_shape_if_in_bin(self, shape):
         bx, by, bw, bh = self.bin.values()
@@ -101,7 +105,6 @@ class ShapeManager:
             cx, cy = np.mean(pts[:, 0]), np.mean(pts[:, 1])
         else:
             cx, cy = shape["x"] + shape["size"] / 2, shape["y"] + shape["size"] / 2
-
         if bx < cx < bx + bw and by < cy < by + bh:
             self.shapes.remove(shape)
             return True
@@ -113,76 +116,87 @@ class ShapeManager:
                 return btn["type"]
         return None
 
-    # ---------------- Drawing on Frame ---------------- #
+    def draw_rotated_polygon(self, frame, pts, color):
+        """Draw polygon after rotating its points."""
+        cv2.fillPoly(frame, [pts.astype(np.int32)], color)
 
     def draw_shape(self, frame, shape):
         color = shape["color"]
+        cx, cy = shape["x"] + shape["size"] // 2, shape["y"] + shape["size"] // 2
+        angle = math.radians(shape.get("rotation", 0))
+
+        def rotate_point(x, y):
+            dx, dy = x - cx, y - cy
+            x_rot = cx + dx * math.cos(angle) - dy * math.sin(angle)
+            y_rot = cy + dx * math.sin(angle) + dy * math.cos(angle)
+            return int(x_rot), int(y_rot)
 
         if shape["type"] == "square":
-            cv2.rectangle(frame, (shape["x"], shape["y"]),
-                          (shape["x"] + shape["size"], shape["y"] + shape["size"]), color, -1)
+            pts = np.array([
+                rotate_point(shape["x"], shape["y"]),
+                rotate_point(shape["x"] + shape["size"], shape["y"]),
+                rotate_point(shape["x"] + shape["size"], shape["y"] + shape["size"]),
+                rotate_point(shape["x"], shape["y"] + shape["size"]),
+            ])
+            self.draw_rotated_polygon(frame, pts, color)
 
         elif shape["type"] == "circle":
-            center = (shape["x"] + shape["size"] // 2, shape["y"] + shape["size"] // 2)
-            cv2.circle(frame, center, shape["size"] // 2, color, -1)
+            cv2.circle(frame, (cx, cy), shape["size"] // 2, color, -1)
 
         elif shape["type"] == "triangle":
             pts = np.array([
-                [shape["x"] + shape["size"] // 2, shape["y"]],
-                [shape["x"], shape["y"] + shape["size"]],
-                [shape["x"] + shape["size"], shape["y"] + shape["size"]],
-            ], np.int32)
-            cv2.fillPoly(frame, [pts], color)
+                (shape["x"] + shape["size"] // 2, shape["y"]),
+                (shape["x"], shape["y"] + shape["size"]),
+                (shape["x"] + shape["size"], shape["y"] + shape["size"]),
+            ])
+            pts = np.array([rotate_point(x, y) for x, y in pts])
+            self.draw_rotated_polygon(frame, pts, color)
 
         elif shape["type"] == "star":
-            cx, cy = shape["x"] + shape["size"] // 2, shape["y"] + shape["size"] // 2
             pts = []
             for i in range(10):
-                angle = i * 36
+                angle_deg = i * 36
                 r = shape["size"] // 2 if i % 2 == 0 else shape["size"] // 4
-                x = int(cx + r * math.cos(math.radians(angle)))
-                y = int(cy + r * math.sin(math.radians(angle)))
-                pts.append([x, y])
-            cv2.fillPoly(frame, [np.array(pts, np.int32)], color)
+                x = int(cx + r * math.cos(math.radians(angle_deg)))
+                y = int(cy + r * math.sin(math.radians(angle_deg)))
+                pts.append(rotate_point(x, y))
+            self.draw_rotated_polygon(frame, np.array(pts), color)
 
         elif shape["type"] in ["pentagon", "hexagon"]:
             sides = 5 if shape["type"] == "pentagon" else 6
-            cx, cy = shape["x"] + shape["size"] // 2, shape["y"] + shape["size"] // 2
             pts = np.array([
-                (int(cx + shape["size"] // 2 * math.cos(2 * math.pi * i / sides)),
-                 int(cy + shape["size"] // 2 * math.sin(2 * math.pi * i / sides)))
+                rotate_point(
+                    int(cx + shape["size"] // 2 * math.cos(2 * math.pi * i / sides)),
+                    int(cy + shape["size"] // 2 * math.sin(2 * math.pi * i / sides))
+                )
                 for i in range(sides)
-            ], np.int32)
-            cv2.fillPoly(frame, [pts], color)
+            ])
+            self.draw_rotated_polygon(frame, pts, color)
 
         elif shape["type"] == "draw":
             for i in range(1, len(shape["points"])):
                 cv2.line(frame, shape["points"][i - 1], shape["points"][i], color, 4)
 
     def draw_ui(self, frame):
-        # Draw all shapes
         for shape in self.shapes:
             self.draw_shape(frame, shape)
 
-        # Draw ongoing drawing
         if self.drawing and self.current_draw:
             for i in range(1, len(self.current_draw["points"])):
                 cv2.line(frame, self.current_draw["points"][i - 1], self.current_draw["points"][i],
                          self.current_draw["color"], 4)
 
-        # Draw buttons
+        # Buttons
         for btn in self.buttons:
-            cv2.rectangle(frame, (btn["x"], btn["y"]),
-                          (btn["x"] + btn["w"], btn["y"] + btn["h"]), (0, 0, 0), -1)
-            cv2.rectangle(frame, (btn["x"], btn["y"]),
-                          (btn["x"] + btn["w"], btn["y"] + btn["h"]), (255, 255, 255), 2)
+            cv2.rectangle(frame, (btn["x"], btn["y"]), (btn["x"] + btn["w"], btn["y"] + btn["h"]), (0, 0, 0), -1)
+            cv2.rectangle(frame, (btn["x"], btn["y"]), (btn["x"] + btn["w"], btn["y"] + btn["h"]), (255, 255, 255), 2)
             cv2.putText(frame, btn["label"], (btn["x"] + 20, btn["y"] + 45),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
-        # Draw bin
+        # Bin
         bx, by, bw, bh = self.bin.values()
         cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (0, 0, 255), 2)
-        cv2.putText(frame, "Bin", (bx + 30, by + 80),
+        cv2.putText(frame, "🗑️", (bx + 30, by + 80),
                     cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 4)
 
         return frame
