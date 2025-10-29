@@ -111,7 +111,7 @@ class ShapeManager:
         color = shape["color"]
         if shape["type"] == "square":
             cv2.rectangle(frame, (shape["x"], shape["y"]),
-                          (shape["x"] + shape["size"], shape["y"] + shape["size"]), color, -1)
+                        (shape["x"] + shape["size"], shape["y"] + shape["size"]), color, -1)
         elif shape["type"] == "circle":
             center = (shape["x"] + shape["size"] // 2, shape["y"] + shape["size"] // 2)
             cv2.circle(frame, center, shape["size"] // 2, color, -1)
@@ -153,7 +153,7 @@ class ShapeManager:
         if self.drawing and self.current_draw:
             for i in range(1, len(self.current_draw["points"])):
                 cv2.line(frame, self.current_draw["points"][i - 1],
-                         self.current_draw["points"][i], self.current_draw["color"], 4)
+                        self.current_draw["points"][i], self.current_draw["color"], 4)
 
         # Buttons
         for btn in self.buttons:

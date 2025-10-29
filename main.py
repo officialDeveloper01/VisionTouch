@@ -7,11 +7,17 @@ import time
 from modules.hand_detector import HandDetector
 from modules.shape_utils import ShapeManager
 
+
 def is_pinch(hand):
     x1, y1 = hand["landmarks"][8][1], hand["landmarks"][8][2]
     x2, y2 = hand["landmarks"][4][1], hand["landmarks"][4][2]
     dist = math.hypot(x2 - x1, y2 - y1)
     return dist < 40, (int((x1 + x2) // 2), int((y1 + y2) // 2))
+
+
+def distance(p1, p2):
+    return math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+
 
 def main():
     cap = cv2.VideoCapture(0)
@@ -28,6 +34,12 @@ def main():
     pinch_cooldown = 0
     draw_cooldown_start = None
     draw_cooldown_duration = 3  # seconds
+
+    # Zoom state
+    zoom_active = False
+    zoom_start_dist = None
+    zoom_shape = None
+    original_size = None
 
     while True:
         success, frame = cap.read()
@@ -57,8 +69,41 @@ def main():
                 shapes.current_draw = {"type": "draw", "points": [], "color": shapes._random_color()}
                 draw_cooldown_start = None
 
-        for label, hand in [("left", next((h for h in hands if h["label"] == "Left"), None)),
-                            ("right", next((h for h in hands if h["label"] == "Right"), None))]:
+        # Detect left and right hand
+        left_hand = next((h for h in hands if h["label"] == "Left"), None)
+        right_hand = next((h for h in hands if h["label"] == "Right"), None)
+
+        # Detect pinch for each hand
+        left_pinch, left_center = is_pinch(left_hand) if left_hand else (False, None)
+        right_pinch, right_center = is_pinch(right_hand) if right_hand else (False, None)
+
+        # --- ZOOM MODE ---
+        if left_pinch and right_pinch:
+            cv2.line(img, left_center, right_center, (255, 255, 0), 3)
+            dist_now = distance(left_center, right_center)
+
+            if not zoom_active:
+                zoom_active = True
+                zoom_start_dist = dist_now
+                # Use the first selected shape for zooming
+                zoom_shape = shapes.selected_left or shapes.selected_right
+                if zoom_shape:
+                    original_size = zoom_shape["size"]
+            else:
+                if zoom_shape:
+                    scale = dist_now / zoom_start_dist
+                    new_size = int(original_size * scale)
+                    zoom_shape["size"] = max(30, min(new_size, 400))  # clamp
+                    cv2.putText(img, f"Zoom: {int(scale*100)}%", (40, 120),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)
+        else:
+            zoom_active = False
+            zoom_start_dist = None
+            zoom_shape = None
+            original_size = None
+
+        # --- NORMAL INTERACTIONS ---
+        for label, hand in [("left", left_hand), ("right", right_hand)]:
             if not hand:
                 setattr(shapes, f"selected_{label}", None)
                 continue
@@ -105,7 +150,7 @@ def main():
         pinch_cooldown = max(0, pinch_cooldown - 1)
 
         img = shapes.draw_ui(img)
-        cv2.putText(img, "Pinch to Add / Move / Draw / Delete", (40, 700),
+        cv2.putText(img, "Pinch to Add / Move / Draw / Delete | Two-Hand Pinch = Resize", (40, 700),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
         cv2.imshow(window_name, img)
@@ -115,6 +160,7 @@ def main():
 
     cap.release()
     cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()
