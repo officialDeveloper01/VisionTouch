@@ -4,7 +4,6 @@ import math
 from modules.hand_detector import HandDetector
 from modules.shape_utils import ShapeManager
 
-
 # --- Setup ---
 width, height = 1280, 720
 cap = cv2.VideoCapture(0)
@@ -16,7 +15,6 @@ shape_manager = ShapeManager(width, height)
 
 mode = "UI"  # Toggle between UI and drawing
 rotate_mode = False  # Active when both hands are detected for rotation
-
 last_angle = None
 
 
@@ -36,6 +34,7 @@ def draw_text(frame, text, pos, color=(255, 255, 255)):
 while True:
     success, frame = cap.read()
     frame = cv2.flip(frame, 1)
+
     hands, frame = detector.findHands(frame)
 
     if hands:
@@ -80,17 +79,22 @@ while True:
             if fingers1 == [0, 1, 0, 0, 0] and fingers2 == [0, 1, 0, 0, 0]:
                 # Both index fingers up → rotate mode
                 rotate_mode = True
+
                 if shape_manager.selected_left:
                     shape = shape_manager.selected_left
+
                     # Compute relative angle between two hands
-                    angle_now = math.degrees(math.atan2(center2[1] - center1[1], center2[0] - center1[0]))
+                    angle_now = math.degrees(
+                        math.atan2(center2[1] - center1[1], center2[0] - center1[0])
+                    )
+
                     if last_angle is None:
                         last_angle = angle_now
                     else:
                         delta = angle_now - last_angle
                         if abs(delta) > 2:
                             shape_manager.rotate_shape(shape, delta)
-                            last_angle = angle_now
+                        last_angle = angle_now
             else:
                 rotate_mode = False
                 last_angle = None
@@ -103,12 +107,11 @@ while True:
             if shape_manager.remove_shape_if_in_bin(shape_manager.selected_left):
                 shape_manager.selected_left = None
                 shape_manager.last_left_pos = None
-
-    else:
-        shape_manager.selected_left = None
-        shape_manager.last_left_pos = None
-        rotate_mode = False
-        last_angle = None
+        else:
+            shape_manager.selected_left = None
+            shape_manager.last_left_pos = None
+            rotate_mode = False
+            last_angle = None
 
     # --- Draw all UI and shapes ---
     frame = shape_manager.draw_ui(frame)
@@ -119,9 +122,9 @@ while True:
         draw_text(frame, "Rotate Mode Active", (60, 690), (0, 255, 0))
 
     cv2.imshow("Gesture Drawing", frame)
-    key = cv2.waitKey(1)
 
     # --- Keyboard controls ---
+    key = cv2.waitKey(1)
     if key == ord("t"):
         mode = "DRAW" if mode == "UI" else "UI"
     elif key == 27:  # ESC to exit

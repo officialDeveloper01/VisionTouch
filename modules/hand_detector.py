@@ -1,135 +1,190 @@
-# modules/hand_detector.py
-import cv2
-import mediapipe as mp
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
+import cv2
+import math
+import time
+from modules.shape_utils import ShapeManager
 
 class HandDetector:
-    def __init__(self, detection_conf=0.7, track_conf=0.7, max_hands=2, **kwargs):
-        # Backward compatibility: accept old parameter names if passed
-        if "detectionCon" in kwargs:
-            detection_conf = kwargs["detectionCon"]
-        if "trackCon" in kwargs:
-            track_conf = kwargs["trackCon"]
-        if "maxHands" in kwargs:
-            max_hands = kwargs["maxHands"]
-
-        self.detection_conf = detection_conf
-        self.track_conf = track_conf
-        self.max_hands = max_hands
-
-        self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=self.max_hands,
-            min_detection_confidence=self.detection_conf,
-            min_tracking_confidence=self.track_conf,
-        )
-        self.mp_draw = mp.solutions.drawing_utils
-        self.results = None
+    def is_pinch(hand):
+        x1, y1 = hand["landmarks"][8][1], hand["landmarks"][8][2]
+        x2, y2 = hand["landmarks"][4][1], hand["landmarks"][4][2]
+        dist = math.hypot(x2 - x1, y2 - y1)
+        return dist < 40, (int((x1 + x2) // 2), int((y1 + y2) // 2))
 
 
-    def find_hands(self, img, draw=True):
-        """
-        Detect hands in a BGR image. Call this once per frame.
-        """
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        self.results = self.hands.process(img_rgb)
+    def distance(p1, p2):
+        return math.hypot(p2[0] - p1[0], p2[1] - p1[1])
 
-        if draw and self.results and self.results.multi_hand_landmarks:
-            for hand_lms, hand_type in zip(
-                self.results.multi_hand_landmarks, self.results.multi_handedness
-            ):
-                self.mp_draw.draw_landmarks(
-                    img, hand_lms, self.mp_hands.HAND_CONNECTIONS
-                )
 
-                # Draw label ("Left" / "Right")
-                label = hand_type.classification[0].label
-                h, w, _ = img.shape
-                cx, cy = int(hand_lms.landmark[0].x * w), int(hand_lms.landmark[0].y * h)
-                cv2.putText(
-                    img,
-                    label,
-                    (cx - 30, cy + 40),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (255, 255, 255),
-                    2,
-                )
-        return img
+    def main():
+        cap = cv2.VideoCapture(0)
+        cap.set(3, 1280)
+        cap.set(4, 720)
 
-    def find_positions(self, img, draw=False):
-        """
-        Returns list of hands; each hand is dict:
-            {
-                "label": "Right"/"Left",
-                "landmarks": [ (id, x, y), ... ],
-                "center": (cx, cy)
-            }
-        """
-        all_hands = []
-        if not self.results or not self.results.multi_hand_landmarks:
-            return all_hands
+        detector = HandDetector(detection_conf=0.7, track_conf=0.7)
+        shapes = ShapeManager(1280, 720)
 
-        for hand_idx, hand_lms in enumerate(self.results.multi_hand_landmarks):
-            h, w, _ = img.shape
-            lm_list = []
-            for id, lm in enumerate(hand_lms.landmark):
-                cx, cy = int(lm.x * w), int(lm.y * h)
-                lm_list.append((id, cx, cy))
+        window_name = "VisionTouch - Shape Sandbox"
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
-            label = self.results.multi_handedness[hand_idx].classification[0].label
+        pinch_cooldown = 0
+        draw_cooldown_start = None
+        draw_cooldown_duration = 3  # seconds
 
-            cx = sum([pt[1] for pt in lm_list]) // len(lm_list)
-            cy = sum([pt[2] for pt in lm_list]) // len(lm_list)
+        # Zoom state
+        zoom_active = False
+        zoom_start_dist = None
+        zoom_shape = None
+        original_size = None
 
-            hand_data = {"label": label, "landmarks": lm_list, "center": (cx, cy)}
-            all_hands.append(hand_data)
+        while True:
+            success, frame = cap.read()
+            if not success:
+                break
 
-            if draw:
-                cv2.circle(img, (cx, cy), 10, (255, 0, 0), cv2.FILLED)
-                cv2.putText(
-                    img,
-                    f"{label} Hand",
-                    (cx - 40, cy - 40),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (255, 255, 255),
-                    2,
-                )
+            frame = cv2.flip(frame, 1)
+            img = detector.find_hands(frame, draw=False)
+            hands = detector.find_positions(img, draw=False)
 
-        return all_hands
+            # Fix mirroring issue
+            for h in hands:
+                h["label"] = "Right" if h["label"] == "Left" else "Left"
 
-    def fingers_up(self, hand):
-        """
-        Returns list [thumb, index, middle, ring, pinky] with 1=up, 0=down.
-        """
-        lm = hand["landmarks"]
-        label = hand.get("label", "Right")  # Default "Right" if missing
+            current_time = time.time()
 
-        fingers = []
+            # Handle draw cooldown countdown
+            if draw_cooldown_start:
+                elapsed = current_time - draw_cooldown_start
+                if elapsed < draw_cooldown_duration:
+                    remaining = int(draw_cooldown_duration - elapsed + 1)
+                    cv2.putText(
+                        img,
+                        f"🖊️ Drawing starts in {remaining}s",
+                        (420, 360),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1.2,
+                        (0, 255, 255),
+                        3,
+                    )
+                else:
+                    # Start drawing after cooldown completes
+                    shapes.drawing = True
+                    shapes.current_draw = {
+                        "type": "draw",
+                        "points": [],
+                        "color": shapes._random_color(),
+                    }
+                    draw_cooldown_start = None
 
-        # Thumb (depends on handedness)
-        if label == "Right":
-            fingers.append(1 if lm[4][1] < lm[3][1] else 0)
-        else:
-            fingers.append(1 if lm[4][1] > lm[3][1] else 0)
+            # Detect left and right hand
+            left_hand = next((h for h in hands if h["label"] == "Left"), None)
+            right_hand = next((h for h in hands if h["label"] == "Right"), None)
 
-        # Other fingers: tip.y < pip.y means finger up
-        tip_ids = [8, 12, 16, 20]
-        for tid in tip_ids:
-            fingers.append(1 if lm[tid][2] < lm[tid - 2][2] else 0)
+            # Detect pinch for each hand
+            left_pinch, left_center = is_pinch(left_hand) if left_hand else (False, None)
+            right_pinch, right_center = is_pinch(right_hand) if right_hand else (False, None)
 
-        return fingers
+            # --- ZOOM MODE ---
+            if left_pinch and right_pinch:
+                cv2.line(img, left_center, right_center, (255, 255, 0), 3)
+                dist_now = distance(left_center, right_center)
 
-    def get_angle_between_hands(self, hand1, hand2):
-        """
-        Compute the rotation angle (in degrees) between two hands based on their center positions.
-        Useful for rotation gestures.
-        """
-        import math
+                if not zoom_active:
+                    zoom_active = True
+                    zoom_start_dist = dist_now
+                    # Use the first selected shape for zooming
+                    zoom_shape = shapes.selected_left or shapes.selected_right
+                    if zoom_shape:
+                        original_size = zoom_shape["size"]
+                else:
+                    if zoom_shape:
+                        scale = dist_now / zoom_start_dist
+                        new_size = int(original_size * scale)
+                        zoom_shape["size"] = max(30, min(new_size, 400))  # clamp
+                        cv2.putText(
+                            img,
+                            f"Zoom: {int(scale * 100)}%",
+                            (40, 120),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            1.2,
+                            (0, 255, 255),
+                            3,
+                        )
+            else:
+                zoom_active = False
+                zoom_start_dist = None
+                zoom_shape = None
+                original_size = None
 
-        (x1, y1) = hand1["center"]
-        (x2, y2) = hand2["center"]
-        angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
-        return angle
+            # --- NORMAL INTERACTIONS ---
+            for label, hand in [("left", left_hand), ("right", right_hand)]:
+                if not hand:
+                    setattr(shapes, f"selected_{label}", None)
+                    continue
+
+                pinch, center = is_pinch(hand)
+                if pinch:
+                    cv2.circle(img, center, 12, (0, 255, 255), -1)
+
+                    # Drawing mode active
+                    if shapes.drawing:
+                        shapes.current_draw["points"].append(center)
+                        continue
+
+                    # Button click
+                    if pinch_cooldown <= 0 and not draw_cooldown_start:
+                        clicked = shapes.check_button_click(*center)
+                        if clicked:
+                            if clicked == "draw":
+                                draw_cooldown_start = time.time()  # start 3s countdown
+                            else:
+                                shapes.add_shape(clicked)
+                            pinch_cooldown = 25
+
+                    # Move shapes
+                    selected = getattr(shapes, f"selected_{label}")
+                    last_pos = getattr(shapes, f"last_{label}_pos")
+
+                    if selected is None:
+                        shape = shapes.select_shape(*center)
+                        if shape:
+                            setattr(shapes, f"selected_{label}", shape)
+                            setattr(shapes, f"last_{label}_pos", center)
+                    else:
+                        new_pos = shapes.move_shape(selected, *center, last_pos)
+                        setattr(shapes, f"last_{label}_pos", new_pos)
+                        if shapes.remove_shape_if_in_bin(selected):
+                            setattr(shapes, f"selected_{label}", None)
+                else:
+                    # If drawing and pinch released → finish
+                    if shapes.drawing:
+                        shapes.finish_draw()
+                    setattr(shapes, f"selected_{label}", None)
+                    setattr(shapes, f"last_{label}_pos", None)
+
+            pinch_cooldown = max(0, pinch_cooldown - 1)
+            img = shapes.draw_ui(img)
+
+            cv2.putText(
+                img,
+                "Pinch to Add / Move / Draw / Delete | Two-Hand Pinch = Resize",
+                (40, 700),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (255, 255, 255),
+                2,
+            )
+
+            cv2.imshow(window_name, img)
+            if cv2.waitKey(1) & 0xFF == 27:
+                break
+
+        cap.release()
+        cv2.destroyAllWindows()
+
+
+    if __name__ == "__main__":
+        main()
