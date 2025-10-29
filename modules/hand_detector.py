@@ -1,190 +1,78 @@
-import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
+# modules/hand_detector.py
 import cv2
-import math
-import time
-from modules.shape_utils import ShapeManager
+import mediapipe as mp
 
 class HandDetector:
-    def is_pinch(hand):
-        x1, y1 = hand["landmarks"][8][1], hand["landmarks"][8][2]
-        x2, y2 = hand["landmarks"][4][1], hand["landmarks"][4][2]
-        dist = math.hypot(x2 - x1, y2 - y1)
-        return dist < 40, (int((x1 + x2) // 2), int((y1 + y2) // 2))
+    def __init__(self, detection_conf=0.7, track_conf=0.7, max_hands=2):
+        self.mp_hands = mp.solutions.hands
+        self.hands = self.mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=max_hands,
+            min_detection_confidence=detection_conf,
+            min_tracking_confidence=track_conf
+        )
+        self.mp_draw = mp.solutions.drawing_utils
+        self.results = None
 
+    def find_hands(self, img, draw=True):
+        """
+        Process the provided image (BGR). IMPORTANT: pass the raw (unflipped) frame here.
+        """
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        self.results = self.hands.process(img_rgb)
 
-    def distance(p1, p2):
-        return math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+        if draw and self.results and self.results.multi_hand_landmarks:
+            for hand_lms in self.results.multi_hand_landmarks:
+                self.mp_draw.draw_landmarks(img, hand_lms, self.mp_hands.HAND_CONNECTIONS)
+        return img
 
+    def find_positions(self, img, draw=False):
+        """
+        Returns list of hands; each hand is dict:
+            { "label": "Right"/"Left", "landmarks": [ (id, x, y), ... ] }
+        Coordinates (x,y) are pixel coordinates in the SAME IMAGE you passed to find_hands().
+        """
+        all_hands = []
+        if not self.results or not self.results.multi_hand_landmarks:
+            return all_hands
 
-    def main():
-        cap = cv2.VideoCapture(0)
-        cap.set(3, 1280)
-        cap.set(4, 720)
+        for hand_idx, hand_lms in enumerate(self.results.multi_hand_landmarks):
+            h, w, _ = img.shape
+            lm_list = []
+            for id, lm in enumerate(hand_lms.landmark):
+                cx, cy = int(lm.x * w), int(lm.y * h)
+                lm_list.append((id, cx, cy))
 
-        detector = HandDetector(detection_conf=0.7, track_conf=0.7)
-        shapes = ShapeManager(1280, 720)
+            # Handedness label from Mediapipe (corresponds to the image passed)
+            label = self.results.multi_handedness[hand_idx].classification[0].label
+            all_hands.append({"label": label, "landmarks": lm_list})
 
-        window_name = "VisionTouch - Shape Sandbox"
-        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        return all_hands
 
-        pinch_cooldown = 0
-        draw_cooldown_start = None
-        draw_cooldown_duration = 3  # seconds
+    def fingers_up(self, hand):
+        """
+        Expect `hand` as returned by find_positions (dict).
+        Returns list [thumb, index, middle, ring, pinky] with 1=up,0=down.
+        Uses a robust test: for non-thumb fingers compare tip.y < pip.y.
+        For thumb use x comparison depending on handedness.
+        """
+        lm = hand["landmarks"]
+        label = hand.get("label", "Right")  # default Right if missing
 
-        # Zoom state
-        zoom_active = False
-        zoom_start_dist = None
-        zoom_shape = None
-        original_size = None
+        fingers = []
 
-        while True:
-            success, frame = cap.read()
-            if not success:
-                break
+        # Thumb: decide direction based on handedness
+        # For the raw (unflipped) image coordinates:
+        # - For "Right" hand, thumb tip (4).x < ip.x (3) means thumb is open (to the left)
+        # - For "Left" hand, thumb tip (4).x > ip.x (3) means thumb is open (to the right)
+        if label == "Right":
+            fingers.append(1 if lm[4][1] < lm[3][1] else 0)
+        else:
+            fingers.append(1 if lm[4][1] > lm[3][1] else 0)
 
-            frame = cv2.flip(frame, 1)
-            img = detector.find_hands(frame, draw=False)
-            hands = detector.find_positions(img, draw=False)
+        # Other fingers: tip.y < pip.y -> finger up (y increases downward)
+        tip_ids = [8, 12, 16, 20]
+        for tid in tip_ids:
+            fingers.append(1 if lm[tid][2] < lm[tid - 2][2] else 0)
 
-            # Fix mirroring issue
-            for h in hands:
-                h["label"] = "Right" if h["label"] == "Left" else "Left"
-
-            current_time = time.time()
-
-            # Handle draw cooldown countdown
-            if draw_cooldown_start:
-                elapsed = current_time - draw_cooldown_start
-                if elapsed < draw_cooldown_duration:
-                    remaining = int(draw_cooldown_duration - elapsed + 1)
-                    cv2.putText(
-                        img,
-                        f"🖊️ Drawing starts in {remaining}s",
-                        (420, 360),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1.2,
-                        (0, 255, 255),
-                        3,
-                    )
-                else:
-                    # Start drawing after cooldown completes
-                    shapes.drawing = True
-                    shapes.current_draw = {
-                        "type": "draw",
-                        "points": [],
-                        "color": shapes._random_color(),
-                    }
-                    draw_cooldown_start = None
-
-            # Detect left and right hand
-            left_hand = next((h for h in hands if h["label"] == "Left"), None)
-            right_hand = next((h for h in hands if h["label"] == "Right"), None)
-
-            # Detect pinch for each hand
-            left_pinch, left_center = is_pinch(left_hand) if left_hand else (False, None)
-            right_pinch, right_center = is_pinch(right_hand) if right_hand else (False, None)
-
-            # --- ZOOM MODE ---
-            if left_pinch and right_pinch:
-                cv2.line(img, left_center, right_center, (255, 255, 0), 3)
-                dist_now = distance(left_center, right_center)
-
-                if not zoom_active:
-                    zoom_active = True
-                    zoom_start_dist = dist_now
-                    # Use the first selected shape for zooming
-                    zoom_shape = shapes.selected_left or shapes.selected_right
-                    if zoom_shape:
-                        original_size = zoom_shape["size"]
-                else:
-                    if zoom_shape:
-                        scale = dist_now / zoom_start_dist
-                        new_size = int(original_size * scale)
-                        zoom_shape["size"] = max(30, min(new_size, 400))  # clamp
-                        cv2.putText(
-                            img,
-                            f"Zoom: {int(scale * 100)}%",
-                            (40, 120),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            1.2,
-                            (0, 255, 255),
-                            3,
-                        )
-            else:
-                zoom_active = False
-                zoom_start_dist = None
-                zoom_shape = None
-                original_size = None
-
-            # --- NORMAL INTERACTIONS ---
-            for label, hand in [("left", left_hand), ("right", right_hand)]:
-                if not hand:
-                    setattr(shapes, f"selected_{label}", None)
-                    continue
-
-                pinch, center = is_pinch(hand)
-                if pinch:
-                    cv2.circle(img, center, 12, (0, 255, 255), -1)
-
-                    # Drawing mode active
-                    if shapes.drawing:
-                        shapes.current_draw["points"].append(center)
-                        continue
-
-                    # Button click
-                    if pinch_cooldown <= 0 and not draw_cooldown_start:
-                        clicked = shapes.check_button_click(*center)
-                        if clicked:
-                            if clicked == "draw":
-                                draw_cooldown_start = time.time()  # start 3s countdown
-                            else:
-                                shapes.add_shape(clicked)
-                            pinch_cooldown = 25
-
-                    # Move shapes
-                    selected = getattr(shapes, f"selected_{label}")
-                    last_pos = getattr(shapes, f"last_{label}_pos")
-
-                    if selected is None:
-                        shape = shapes.select_shape(*center)
-                        if shape:
-                            setattr(shapes, f"selected_{label}", shape)
-                            setattr(shapes, f"last_{label}_pos", center)
-                    else:
-                        new_pos = shapes.move_shape(selected, *center, last_pos)
-                        setattr(shapes, f"last_{label}_pos", new_pos)
-                        if shapes.remove_shape_if_in_bin(selected):
-                            setattr(shapes, f"selected_{label}", None)
-                else:
-                    # If drawing and pinch released → finish
-                    if shapes.drawing:
-                        shapes.finish_draw()
-                    setattr(shapes, f"selected_{label}", None)
-                    setattr(shapes, f"last_{label}_pos", None)
-
-            pinch_cooldown = max(0, pinch_cooldown - 1)
-            img = shapes.draw_ui(img)
-
-            cv2.putText(
-                img,
-                "Pinch to Add / Move / Draw / Delete | Two-Hand Pinch = Resize",
-                (40, 700),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (255, 255, 255),
-                2,
-            )
-
-            cv2.imshow(window_name, img)
-            if cv2.waitKey(1) & 0xFF == 27:
-                break
-
-        cap.release()
-        cv2.destroyAllWindows()
-
-
-    if __name__ == "__main__":
-        main()
+        return fingers
