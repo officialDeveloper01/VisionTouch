@@ -6,16 +6,17 @@ import math
 import time
 from modules.hand_detector import HandDetector
 from modules.shape_utils import ShapeManager
-from modules.shape_3d import Shape3DManager
-from modules.ui_buttons import UIButtonManager
 
 
 def is_pinch(hand):
-    """Return (isPinching, centerPoint)."""
     x1, y1 = hand["landmarks"][8][1], hand["landmarks"][8][2]
     x2, y2 = hand["landmarks"][4][1], hand["landmarks"][4][2]
     dist = math.hypot(x2 - x1, y2 - y1)
     return dist < 40, (int((x1 + x2) // 2), int((y1 + y2) // 2))
+
+
+def distance(p1, p2):
+    return math.hypot(p2[0] - p1[0], p2[1] - p1[1])
 
 
 def main():
@@ -24,18 +25,21 @@ def main():
     cap.set(4, 720)
 
     detector = HandDetector(detection_conf=0.7, track_conf=0.7)
-    shape2d = ShapeManager(1280, 720)
-    shape3d = Shape3DManager()
-    ui = UIButtonManager()
+    shapes = ShapeManager(1280, 720)
 
     window_name = "VisionTouch - Shape Sandbox"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
-    mode_3d = False
     pinch_cooldown = 0
-    active_draw_cooldown = None
-    cooldown_time = 3
+    draw_cooldown_start = None
+    draw_cooldown_duration = 3  # seconds
+
+    # Zoom state
+    zoom_active = False
+    zoom_start_dist = None
+    zoom_shape = None
+    original_size = None
 
     while True:
         success, frame = cap.read()
@@ -46,107 +50,107 @@ def main():
         img = detector.find_hands(frame, draw=False)
         hands = detector.find_positions(img, draw=False)
 
-        # Fix mirrored labels
+        # Fix mirroring issue
         for h in hands:
             h["label"] = "Right" if h["label"] == "Left" else "Left"
 
         current_time = time.time()
 
-        # Handle drawing cooldown
-        if active_draw_cooldown:
-            elapsed = current_time - active_draw_cooldown
-            if elapsed < cooldown_time:
-                rem = int(cooldown_time - elapsed + 1)
-                cv2.putText(img, f"🖊️ Drawing starts in {rem}s", (420, 360),
+        # Handle draw cooldown countdown
+        if draw_cooldown_start:
+            elapsed = current_time - draw_cooldown_start
+            if elapsed < draw_cooldown_duration:
+                remaining = int(draw_cooldown_duration - elapsed + 1)
+                cv2.putText(img, f"🖊️ Drawing starts in {remaining}s", (420, 360),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)
             else:
-                shape2d.drawing = True
-                shape2d.current_draw = {"type": "draw", "points": [], "color": shape2d._random_color()}
-                active_draw_cooldown = None
+                # Start drawing after cooldown completes
+                shapes.drawing = True
+                shapes.current_draw = {"type": "draw", "points": [], "color": shapes._random_color()}
+                draw_cooldown_start = None
 
-        # Draw all UI buttons
-        ui.draw_buttons(img, mode_3d)
+        # Detect left and right hand
+        left_hand = next((h for h in hands if h["label"] == "Left"), None)
+        right_hand = next((h for h in hands if h["label"] == "Right"), None)
 
-        for label, hand in [("left", next((h for h in hands if h["label"] == "Left"), None)),
-                            ("right", next((h for h in hands if h["label"] == "Right"), None))]:
+        # Detect pinch for each hand
+        left_pinch, left_center = is_pinch(left_hand) if left_hand else (False, None)
+        right_pinch, right_center = is_pinch(right_hand) if right_hand else (False, None)
 
+        # --- ZOOM MODE ---
+        if left_pinch and right_pinch:
+            cv2.line(img, left_center, right_center, (255, 255, 0), 3)
+            dist_now = distance(left_center, right_center)
+
+            if not zoom_active:
+                zoom_active = True
+                zoom_start_dist = dist_now
+                # Use the first selected shape for zooming
+                zoom_shape = shapes.selected_left or shapes.selected_right
+                if zoom_shape:
+                    original_size = zoom_shape["size"]
+            else:
+                if zoom_shape:
+                    scale = dist_now / zoom_start_dist
+                    new_size = int(original_size * scale)
+                    zoom_shape["size"] = max(30, min(new_size, 400))  # clamp
+                    cv2.putText(img, f"Zoom: {int(scale*100)}%", (40, 120),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)
+        else:
+            zoom_active = False
+            zoom_start_dist = None
+            zoom_shape = None
+            original_size = None
+
+        # --- NORMAL INTERACTIONS ---
+        for label, hand in [("left", left_hand), ("right", right_hand)]:
             if not hand:
-                setattr(shape2d, f"selected_{label}", None)
+                setattr(shapes, f"selected_{label}", None)
                 continue
 
             pinch, center = is_pinch(hand)
             if pinch:
                 cv2.circle(img, center, 12, (0, 255, 255), -1)
 
-                # =========================
-                # Mode: 2D
-                # =========================
-                if not mode_3d:
+                # Drawing mode active
+                if shapes.drawing:
+                    shapes.current_draw["points"].append(center)
+                    continue
 
-                    # Drawing
-                    if shape2d.drawing:
-                        shape2d.current_draw["points"].append(center)
-                        continue
+                # Button click
+                if pinch_cooldown <= 0 and not draw_cooldown_start:
+                    clicked = shapes.check_button_click(*center)
+                    if clicked:
+                        if clicked == "draw":
+                            draw_cooldown_start = time.time()  # start 3s countdown
+                        else:
+                            shapes.add_shape(clicked)
+                        pinch_cooldown = 25
 
-                    # Button click
-                    if pinch_cooldown <= 0 and not active_draw_cooldown:
-                        clicked = ui.check_button_click(*center)
-                        if clicked == "toggle_mode":
-                            mode_3d = not mode_3d
-                            pinch_cooldown = 25
-                        elif clicked == "draw":
-                            active_draw_cooldown = time.time()
-                            pinch_cooldown = 25
-                        elif clicked:
-                            shape2d.add_shape(clicked)
-                            pinch_cooldown = 25
-
-                    # Move shapes
-                    selected = getattr(shape2d, f"selected_{label}")
-                    last_pos = getattr(shape2d, f"last_{label}_pos")
-                    if selected is None:
-                        shape = shape2d.select_shape(*center)
-                        if shape:
-                            setattr(shape2d, f"selected_{label}", shape)
-                            setattr(shape2d, f"last_{label}_pos", center)
-                    else:
-                        new_pos = shape2d.move_shape(selected, *center, last_pos)
-                        setattr(shape2d, f"last_{label}_pos", new_pos)
-                        if shape2d.remove_shape_if_in_bin(selected):
-                            setattr(shape2d, f"selected_{label}", None)
-
-                # =========================
-                # Mode: 3D
-                # =========================
+                # Move shapes
+                selected = getattr(shapes, f"selected_{label}")
+                last_pos = getattr(shapes, f"last_{label}_pos")
+                if selected is None:
+                    shape = shapes.select_shape(*center)
+                    if shape:
+                        setattr(shapes, f"selected_{label}", shape)
+                        setattr(shapes, f"last_{label}_pos", center)
                 else:
-                    if pinch_cooldown <= 0:
-                        clicked = ui.check_button_click(*center)
-                        if clicked == "toggle_mode":
-                            mode_3d = not mode_3d
-                            pinch_cooldown = 25
-                        elif clicked:
-                            shape3d.set_active_shape(clicked)
-                            pinch_cooldown = 25
-
-                    shape3d.handle_pinch(center, label)
-
+                    new_pos = shapes.move_shape(selected, *center, last_pos)
+                    setattr(shapes, f"last_{label}_pos", new_pos)
+                    if shapes.remove_shape_if_in_bin(selected):
+                        setattr(shapes, f"selected_{label}", None)
             else:
-                if shape2d.drawing:
-                    shape2d.finish_draw()
-
-                setattr(shape2d, f"selected_{label}", None)
-                setattr(shape2d, f"last_{label}_pos", None)
-                shape3d.handle_release(label)
+                # If drawing and pinch released → finish
+                if shapes.drawing:
+                    shapes.finish_draw()
+                setattr(shapes, f"selected_{label}", None)
+                setattr(shapes, f"last_{label}_pos", None)
 
         pinch_cooldown = max(0, pinch_cooldown - 1)
 
-        # Render appropriate view
-        if not mode_3d:
-            img = shape2d.draw_ui(img)
-        else:
-            img = shape3d.render_preview(img)
-
-        cv2.putText(img, "Pinch to Add / Move / Draw / Delete | Toggle 2D/3D with button", (40, 700),
+        img = shapes.draw_ui(img)
+        cv2.putText(img, "Pinch to Add / Move / Draw / Delete | Two-Hand Pinch = Resize", (40, 700),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
         cv2.imshow(window_name, img)

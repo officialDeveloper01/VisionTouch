@@ -4,6 +4,7 @@ import numpy as np
 import random
 import math
 
+
 class ShapeManager:
     def __init__(self, width, height):
         self.width = width
@@ -31,8 +32,12 @@ class ShapeManager:
         # Bin area
         self.bin = {"x": width - 200, "y": height - 150, "w": 120, "h": 120}
 
+    # ---------------- Utility ---------------- #
+
     def _random_color(self):
         return tuple(random.randint(80, 255) for _ in range(3))
+
+    # ---------------- Shape Actions ---------------- #
 
     def add_shape(self, shape_type):
         size = random.randint(60, 120)
@@ -44,7 +49,9 @@ class ShapeManager:
             self.drawing = True
             self.current_draw = {"type": "draw", "points": [], "color": color}
         else:
-            self.shapes.append({"x": x, "y": y, "size": size, "color": color, "type": shape_type})
+            self.shapes.append({
+                "x": x, "y": y, "size": size, "color": color, "type": shape_type
+            })
 
     def finish_draw(self):
         """End the draw mode and save it as a shape."""
@@ -61,10 +68,9 @@ class ShapeManager:
                     return shape
             elif shape["type"] in ["circle", "triangle", "star"]:
                 cx, cy = shape["x"] + shape["size"] // 2, shape["y"] + shape["size"] // 2
-                if (px - cx)**2 + (py - cy)**2 <= (shape["size"] // 2)**2:
+                if (px - cx) ** 2 + (py - cy) ** 2 <= (shape["size"] // 2) ** 2:
                     return shape
             elif shape["type"] == "draw":
-                # Approximate bounding box check
                 pts = np.array(shape["points"])
                 if len(pts) > 0:
                     x_min, y_min = np.min(pts[:, 0]), np.min(pts[:, 1])
@@ -107,14 +113,19 @@ class ShapeManager:
                 return btn["type"]
         return None
 
+    # ---------------- Drawing on Frame ---------------- #
+
     def draw_shape(self, frame, shape):
         color = shape["color"]
+
         if shape["type"] == "square":
             cv2.rectangle(frame, (shape["x"], shape["y"]),
-                        (shape["x"] + shape["size"], shape["y"] + shape["size"]), color, -1)
+                          (shape["x"] + shape["size"], shape["y"] + shape["size"]), color, -1)
+
         elif shape["type"] == "circle":
             center = (shape["x"] + shape["size"] // 2, shape["y"] + shape["size"] // 2)
             cv2.circle(frame, center, shape["size"] // 2, color, -1)
+
         elif shape["type"] == "triangle":
             pts = np.array([
                 [shape["x"] + shape["size"] // 2, shape["y"]],
@@ -122,6 +133,7 @@ class ShapeManager:
                 [shape["x"] + shape["size"], shape["y"] + shape["size"]],
             ], np.int32)
             cv2.fillPoly(frame, [pts], color)
+
         elif shape["type"] == "star":
             cx, cy = shape["x"] + shape["size"] // 2, shape["y"] + shape["size"] // 2
             pts = []
@@ -132,6 +144,7 @@ class ShapeManager:
                 y = int(cy + r * math.sin(math.radians(angle)))
                 pts.append([x, y])
             cv2.fillPoly(frame, [np.array(pts, np.int32)], color)
+
         elif shape["type"] in ["pentagon", "hexagon"]:
             sides = 5 if shape["type"] == "pentagon" else 6
             cx, cy = shape["x"] + shape["size"] // 2, shape["y"] + shape["size"] // 2
@@ -141,30 +154,35 @@ class ShapeManager:
                 for i in range(sides)
             ], np.int32)
             cv2.fillPoly(frame, [pts], color)
+
         elif shape["type"] == "draw":
             for i in range(1, len(shape["points"])):
                 cv2.line(frame, shape["points"][i - 1], shape["points"][i], color, 4)
 
     def draw_ui(self, frame):
+        # Draw all shapes
         for shape in self.shapes:
             self.draw_shape(frame, shape)
 
-        # Draw current drawing
+        # Draw ongoing drawing
         if self.drawing and self.current_draw:
             for i in range(1, len(self.current_draw["points"])):
-                cv2.line(frame, self.current_draw["points"][i - 1],
-                        self.current_draw["points"][i], self.current_draw["color"], 4)
+                cv2.line(frame, self.current_draw["points"][i - 1], self.current_draw["points"][i],
+                         self.current_draw["color"], 4)
 
-        # Buttons
+        # Draw buttons
         for btn in self.buttons:
-            cv2.rectangle(frame, (btn["x"], btn["y"]), (btn["x"] + btn["w"], btn["y"] + btn["h"]), (0, 0, 0), -1)
-            cv2.rectangle(frame, (btn["x"], btn["y"]), (btn["x"] + btn["w"], btn["y"] + btn["h"]), (255, 255, 255), 2)
+            cv2.rectangle(frame, (btn["x"], btn["y"]),
+                          (btn["x"] + btn["w"], btn["y"] + btn["h"]), (0, 0, 0), -1)
+            cv2.rectangle(frame, (btn["x"], btn["y"]),
+                          (btn["x"] + btn["w"], btn["y"] + btn["h"]), (255, 255, 255), 2)
             cv2.putText(frame, btn["label"], (btn["x"] + 20, btn["y"] + 45),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
-        # Bin
+        # Draw bin
         bx, by, bw, bh = self.bin.values()
         cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (0, 0, 255), 2)
-        cv2.putText(frame, "🗑️", (bx + 30, by + 80), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 4)
+        cv2.putText(frame, "🗑️", (bx + 30, by + 80),
+                    cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 4)
 
         return frame
