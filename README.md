@@ -71,6 +71,7 @@ This system simulates a Minority-Report UI for education & experimentation:
 ---
 
 ## 📁 Folder Structure
+```
 📁 VisionTouch/
 ├── main.py
 ├── modules/
@@ -79,7 +80,7 @@ This system simulates a Minority-Report UI for education & experimentation:
 |   ├── draw_utils.py
 |   ├── shape_3d.py
 └── README.md
-
+```
 
 ---
 
@@ -104,7 +105,7 @@ python main.py
 ---
 
 ## 🏗️ Architecture
-
+```
 Webcam
   └──> OpenCV Frame
         └──> MediaPipe Hand Tracking
@@ -115,6 +116,7 @@ Webcam
                           ├─ Shapes Array
                           └─ Render Engine
 Display <────────────────────────────────────────────┘
+```
 
 ## 📌 Key Concepts
 
