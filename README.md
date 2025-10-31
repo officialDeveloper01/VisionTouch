@@ -71,7 +71,14 @@ This system simulates a Minority-Report UI for education & experimentation:
 ---
 
 ## 📁 Folder Structure
-gesture-vision/ │ ├── main.py ├── modules/ │   ├── hand_detector.py │   └── shape_utils.py ├── assets/         # optional icons └── README.md
+📁 VisionTouch/
+├── main.py
+├── modules/
+│   ├── hand_detector.py
+│   ├── shape_utils.py
+|   ├── draw_utils.py
+|   ├── shape_3d.py
+└── README.md
 
 
 ---
@@ -94,15 +101,20 @@ pip install mediapipe opencv-python
 python main.py
 ```
 
+---
+
 ## 🏗️ Architecture
-Webcam ──> OpenCV Frame ──> MediaPipe Hand Tracking
-                          └──> Gesture Logic
-                                ├─ Pinch / Zoom / Move / Draw
-                                └─ Shape Manager
-                                     ├─ UI Buttons
-                                     ├─ Shapes array
-                                     └─ Render Engine
-Display <─────────────────────────────────────┘
+
+Webcam
+  └──> OpenCV Frame
+        └──> MediaPipe Hand Tracking
+              └──> Gesture Logic
+                    ├─ Pinch / Zoom / Move / Draw
+                    └──> Shape Manager
+                          ├─ UI Buttons
+                          ├─ Shapes Array
+                          └─ Render Engine
+Display <────────────────────────────────────────────┘
 
 ## 📌 Key Concepts
 
